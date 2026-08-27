@@ -55,3 +55,5 @@ jobs:
           path: apk-output/UniversalMediaSaver-Test.apk
           if-no-files-found: error
           retention-days: 7
+
+# rebuild: fixed Activity progress method conflict
