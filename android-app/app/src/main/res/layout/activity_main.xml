@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#000000"
+    android:paddingLeft="22dp"
+    android:paddingRight="22dp"
+    android:paddingTop="28dp"
+    android:paddingBottom="18dp">
+
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="BLACK HOLE" android:textColor="#FFFFFF" android:textSize="12sp" android:letterSpacing="0.35" android:alpha="0.75" />
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Media Saver Test" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="28sp" />
+    <TextView android:id="@+id/statusText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Tap the orb to paste a link" android:textColor="#8C9199" android:textSize="14sp" />
+
+    <FrameLayout android:layout_width="match_parent" android:layout_height="250dp">
+        <View android:layout_width="210dp" android:layout_height="210dp" android:layout_gravity="center" android:background="@drawable/bg_circle" />
+        <TextView android:id="@+id/pasteButton" android:layout_width="116dp" android:layout_height="116dp" android:layout_gravity="center" android:gravity="center" android:background="@drawable/bg_circle" android:text="●" android:textColor="#48FF9B" android:textSize="54sp" android:clickable="true" android:focusable="true" />
+    </FrameLayout>
+
+    <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="10dp" android:max="100" android:progress="0" android:progressDrawable="@drawable/progress_track" />
+    <TextView android:id="@+id/progressText" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="0%" android:textColor="#FFFFFF" android:textSize="13sp" android:gravity="end" />
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="14dp" android:background="@drawable/bg_panel" android:orientation="vertical" android:padding="14dp">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="LIVE LOG" android:textColor="#48FF9B" android:textStyle="bold" android:textSize="11sp" android:letterSpacing="0.18" />
+        <ScrollView android:id="@+id/logScroll" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="10dp" android:fillViewport="true">
+            <TextView android:id="@+id/logText" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Ready.\n" android:textColor="#C9CDD3" android:textSize="12sp" android:fontFamily="monospace" android:lineSpacingExtra="3dp" />
+        </ScrollView>
+    </LinearLayout>
+</LinearLayout>
