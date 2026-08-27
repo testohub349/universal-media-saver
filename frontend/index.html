@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#10131a" />
+  <title>Universal Media Saver</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="brand"><span class="logo">↓</span><span>Universal Media Saver</span></div>
+      <h1>Paste a public media link.</h1>
+      <p>Test your Railway backend with supported public media. Download only content you own or are allowed to save.</p>
+
+      <div class="card">
+        <label for="mediaUrl">Media link</label>
+        <div class="inputRow">
+          <input id="mediaUrl" type="url" placeholder="https://www.instagram.com/reel/..." autocomplete="off" />
+          <button id="pasteBtn" class="secondary" type="button">Paste</button>
+        </div>
+
+        <div class="options">
+          <label>
+            Quality
+            <select id="quality">
+              <option value="max">Maximum</option>
+              <option value="1080" selected>1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+            </select>
+          </label>
+          <label>
+            Mode
+            <select id="mode">
+              <option value="auto" selected>Video + audio</option>
+              <option value="audio">Audio only</option>
+              <option value="mute">Video only</option>
+            </select>
+          </label>
+        </div>
+
+        <button id="downloadBtn" class="primary" type="button">Get media</button>
+        <div id="status" class="status hidden" role="status"></div>
+      </div>
+
+      <section id="result" class="result hidden"></section>
+
+      <div class="support">
+        <span>Designed for:</span>
+        <div class="chips">
+          <span>Instagram</span><span>Facebook</span><span>X</span><span>Reddit</span><span>Pinterest</span><span>Vimeo</span>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
