@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -29,7 +31,8 @@ jobs:
       - name: Restore project
         run: |
           mkdir -p build-src
-          base64 -d android-build/UniversalMediaSaver_TestApp.zip.b64 > build-src/app.zip
+          git fetch origin android-test-apk
+          git show origin/android-test-apk:android-build/UniversalMediaSaver_TestApp.zip.b64 | base64 -d > build-src/app.zip
           cd build-src && unzip -q app.zip
       - name: Build APK
         run: |
@@ -39,6 +42,7 @@ jobs:
         run: |
           mkdir -p apk-output
           cp build-src/UniversalMediaSaver_TestApp/app/build/outputs/apk/debug/app-debug.apk apk-output/UniversalMediaSaver-Test.apk
+          ls -lh apk-output/UniversalMediaSaver-Test.apk
       - uses: actions/upload-artifact@v4
         with:
           name: UniversalMediaSaver-Test-APK
