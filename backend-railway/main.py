@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import yt_dlp
 
-app = FastAPI(title="Universal Media Saver API", version="2.1.0")
+app = FastAPI(title="Universal Media Saver API", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +29,13 @@ COOKIE_FILE = None
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Linux; Android 15; SM-A065F) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+DESKTOP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
@@ -90,6 +97,27 @@ def is_facebook_host(host: str) -> bool:
     return host == "fb.watch" or host.endswith(".facebook.com") or host == "facebook.com"
 
 
+def is_tiktok_host(host: str) -> bool:
+    host = (host or "").lower().split(":")[0]
+    return host in {"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"} or host.endswith(".tiktok.com")
+
+
+def resolve_tiktok_short_url(url: str) -> str:
+    try:
+        p = urlparse(url)
+        host = (p.netloc or "").lower().split(":")[0]
+        if host not in {"vm.tiktok.com", "vt.tiktok.com"}:
+            return url
+        req = UrlRequest(url, headers=DESKTOP_HEADERS, method="GET")
+        with urlopen(req, timeout=15) as resp:
+            final_url = resp.geturl()
+            if is_tiktok_host(urlparse(final_url).netloc):
+                return final_url
+    except Exception:
+        pass
+    return url
+
+
 def looks_like_facebook_media_url(url: str) -> bool:
     try:
         p = urlparse(url)
@@ -104,19 +132,16 @@ def looks_like_facebook_media_url(url: str) -> bool:
 
 
 def clean_facebook_url(url: str) -> str:
-    """Drop common share/tracking query params once we have a canonical media URL."""
     try:
         p = urlparse(url)
         if not is_facebook_host(p.netloc):
             return url
-        # For watch URLs the v query parameter is required, so preserve it.
         if "/watch" in (p.path or "").lower() and "v=" in (p.query or ""):
             keep = []
             for part in p.query.split("&"):
                 if part.startswith("v="):
                     keep.append(part)
             return urlunparse((p.scheme or "https", p.netloc, p.path, p.params, "&".join(keep), ""))
-        # Reel/video paths do not need tracking params.
         if any(x in (p.path or "").lower() for x in ("/reel/", "/reels/", "/videos/")):
             return urlunparse((p.scheme or "https", p.netloc, p.path, p.params, "", ""))
     except Exception:
@@ -125,12 +150,6 @@ def clean_facebook_url(url: str) -> str:
 
 
 def resolve_facebook_share_url(url: str) -> str:
-    """
-    Facebook's Share button frequently produces /share/r/, /share/v/, /share/p/
-    or fb.watch short links. yt-dlp is much more reliable with the final reel/video URL.
-    Follow Facebook's redirect and, when needed, inspect canonical/og:url in the HTML.
-    If resolution is blocked, safely fall back to the original URL.
-    """
     try:
         p = urlparse(url)
         host = (p.netloc or "").lower()
@@ -145,8 +164,6 @@ def resolve_facebook_share_url(url: str) -> str:
             if looks_like_facebook_media_url(final_url):
                 return clean_facebook_url(final_url)
 
-            # Facebook sometimes leaves the visible URL as /share/* but exposes the
-            # actual target in og:url or canonical markup.
             body = resp.read(512 * 1024).decode("utf-8", errors="ignore")
             patterns = [
                 r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)',
@@ -168,14 +185,17 @@ def resolve_facebook_share_url(url: str) -> str:
 def prepare_target_url(raw: str) -> str:
     url = normalize_input_url(raw)
     try:
-        if is_facebook_host(urlparse(url).netloc):
+        host = urlparse(url).netloc
+        if is_facebook_host(host):
             return resolve_facebook_share_url(url)
+        if is_tiktok_host(host):
+            return resolve_tiktok_short_url(url)
     except Exception:
         pass
     return url
 
 
-def ydl_opts(req: ExtractRequest) -> Dict[str, Any]:
+def ydl_opts(req: ExtractRequest, target_url: Optional[str] = None) -> Dict[str, Any]:
     h = quality_height(req.videoQuality)
     mode = (req.downloadMode or "auto").lower()
 
@@ -189,6 +209,12 @@ def ydl_opts(req: ExtractRequest) -> Dict[str, Any]:
         else:
             fmt = "best/bestvideo+bestaudio"
 
+    tiktok = False
+    try:
+        tiktok = is_tiktok_host(urlparse(target_url or req.url).netloc)
+    except Exception:
+        pass
+
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -198,13 +224,16 @@ def ydl_opts(req: ExtractRequest) -> Dict[str, Any]:
         "extract_flat": False,
         "nocheckcertificate": True,
         "socket_timeout": 25,
-        "retries": 2,
-        "fragment_retries": 2,
+        "retries": 3 if tiktok else 2,
+        "fragment_retries": 3 if tiktok else 2,
         "http_headers": {
-            "User-Agent": BROWSER_HEADERS["User-Agent"],
-            "Accept-Language": BROWSER_HEADERS["Accept-Language"],
+            "User-Agent": DESKTOP_HEADERS["User-Agent"] if tiktok else BROWSER_HEADERS["User-Agent"],
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.tiktok.com/" if tiktok else "",
         },
     }
+    if tiktok:
+        opts["impersonate"] = True
     if COOKIE_FILE:
         opts["cookiefile"] = COOKIE_FILE
     return opts
@@ -241,22 +270,31 @@ def safe_filename(info: Dict[str, Any]) -> str:
 def extract(req: ExtractRequest) -> Dict[str, Any]:
     target_url = prepare_target_url(req.url)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts(req)) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts(req, target_url)) as ydl:
             info = ydl.extract_info(target_url, download=False)
             if not info:
                 raise RuntimeError("Extractor returned no media data")
-            # Useful for debugging share-link resolution without exposing secrets.
             if isinstance(info, dict):
                 info["_ums_input_url"] = req.url
                 info["_ums_resolved_url"] = target_url
             return info
     except yt_dlp.utils.DownloadError as e:
+        is_tt = False
+        try:
+            is_tt = is_tiktok_host(urlparse(target_url).netloc)
+        except Exception:
+            pass
+        hint = (
+            "TikTok short links are resolved automatically and browser impersonation is enabled. A removed/private/region-restricted TikTok can still fail."
+            if is_tt else
+            "Facebook share links are resolved automatically. Private/login-only media may still require cookies."
+        )
         raise HTTPException(
             status_code=422,
             detail={
                 "code": "extract.failed",
                 "message": str(e),
-                "hint": "Facebook share links are resolved automatically. Private/login-only media may still require cookies.",
+                "hint": hint,
                 "resolved_url": target_url,
             },
         )
@@ -274,16 +312,18 @@ def root():
     return {
         "status": "ok",
         "name": "Universal Media Saver API",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "engine": "yt-dlp",
         "facebook_share_resolver": True,
+        "tiktok_shortlink_resolver": True,
+        "tiktok_impersonation": True,
         "cookies_loaded": bool(COOKIE_FILE),
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "2.1.0"}
+    return {"status": "ok", "version": "2.2.0"}
 
 
 @app.post("/extract")
@@ -319,7 +359,6 @@ def extract_rich(req: ExtractRequest):
 
 @app.post("/")
 def cobalt_compatible(req: ExtractRequest):
-    """Cobalt-like compatibility endpoint used by the current web/Android clients."""
     try:
         info = extract(req)
 
