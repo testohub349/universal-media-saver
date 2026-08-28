@@ -1,5 +1,6 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 yt-dlp[default,curl-cffi]
-curl-cffi>=0.10,<0.16
+curl-cffi==0.15.0
 pydantic==2.11.7
+

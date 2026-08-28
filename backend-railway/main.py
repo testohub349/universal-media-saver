@@ -67,11 +67,11 @@ class ExtractRequest(BaseModel):
 
 def normalize_input_url(raw: str) -> str:
     s = (raw or "").strip().replace("\u200b", "")
-    md = re.search(r"\[[^\]]*\]\((https?://[^)\s]+)\)", s, re.I)
+    md = re.search(r"\[[^\]]*\]\((https?://[^\)\s]+)\)", s, re.I)
     if md:
         s = md.group(1)
     else:
-        found = re.search(r"https?://[^\s)\]}>\"']+", s, re.I)
+        found = re.search(r"https?://[^\s)>\]}>\"']+", s, re.I)
         if found:
             s = found.group(0)
     while s.endswith((".", ",", ";", ")")):
@@ -184,12 +184,12 @@ def resolve_facebook_share_url(url: str) -> str:
                 return clean_facebook_url(final_url)
             body = resp.read(512 * 1024).decode("utf-8", errors="ignore")
             for pat in (
-                r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)',
-                r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)',
+                r'<meta[^>]+property=["\\']og:url["\\'][^>]+content=["\\']([^\"\\']+)',
+                r'<link[^>]+rel=["\\']canonical["\\'][^>]+href=["\\']([^\"\\']+)',
             ):
                 m = re.search(pat, body, re.I)
                 if m:
-                    candidate = html.unescape(m.group(1)).replace("\\/", "/")
+                    candidate = html.unescape(m.group(1)).replace("\\\\/", "/")
                     if looks_like_facebook_media_url(candidate):
                         return clean_facebook_url(candidate)
     except Exception:
@@ -253,7 +253,6 @@ def ydl_opts(req: ExtractRequest, target_url: str) -> Dict[str, Any]:
         },
     }
     if tiktok:
-        opts["impersonate"] = "chrome"
         opts["http_headers"]["Referer"] = "https://www.tiktok.com/"
     elif reddit:
         opts["http_headers"]["Referer"] = "https://www.reddit.com/"
@@ -332,7 +331,7 @@ def root():
         "facebook_share_resolver": True,
         "tiktok_shortlink_resolver": True,
         "reddit_share_resolver": True,
-        "tiktok_impersonation": "chrome",
+        "tiktok_impersonation": "extractor-auto",
         "cookies_loaded": bool(COOKIE_FILE),
     }
 
@@ -415,3 +414,4 @@ def cobalt_compatible(req: ExtractRequest):
                 "engine": "yt-dlp",
             },
         })
+
