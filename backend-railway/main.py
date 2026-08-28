@@ -7,14 +7,52 @@ import tempfile
 from typing import Optional, Dict, Any, List, Tuple
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
-
+from urllib.parse import quote, unquote
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import yt_dlp
 
 app = FastAPI(title="Universal Media Saver API", version="2.4.0")
+@app.get("/download")
+async def download(url: str):
+
+    url = unquote(url)
+
+    headers = {
+        "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36",
+        "Referer":
+        "https://www.tiktok.com/"
+    }
+
+    async def stream_video():
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=None
+        ) as client:
+
+            async with client.stream(
+                "GET",
+                url,
+                headers=headers
+            ) as response:
+
+                async for chunk in response.aiter_bytes(65536):
+                    yield chunk
+
+
+    return StreamingResponse(
+        stream_video(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition":
+            "attachment; filename=video.mp4"
+        }
+    )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
 
@@ -298,8 +336,13 @@ def build_result(info: Dict[str, Any]):
     if not direct:
         raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No direct media URL was found.",
                                                            "resolved_url": info.get("_ums_resolved_url")})
-    return {"status": "redirect", "url": direct, "filename": safe_filename(info), "headers": headers,
-            "resolvedUrl": info.get("_ums_resolved_url")}
+   return {
+    "status": "download",
+    "url":
+    "https://universal-media-saver-production.up.railway.app/download?url="
+    + quote(direct),
+    "filename": filename
+}
 
 @app.get("/")
 def root():
