@@ -3,17 +3,17 @@ import re
 import html
 import base64
 import tempfile
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import yt_dlp
 
-app = FastAPI(title="Universal Media Saver API", version="2.2.0")
+app = FastAPI(title="Universal Media Saver API", version="2.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,16 +26,14 @@ app.add_middleware(
 
 COOKIE_FILE = None
 
-BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 15; SM-A065F) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+MOBILE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 15; SM-A065F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 DESKTOP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
@@ -67,15 +65,6 @@ class ExtractRequest(BaseModel):
     filenameStyle: Optional[str] = "pretty"
 
 
-def quality_height(q: Optional[str]) -> Optional[int]:
-    if not q or q == "max":
-        return None
-    try:
-        return int(q)
-    except Exception:
-        return None
-
-
 def normalize_input_url(raw: str) -> str:
     s = (raw or "").strip().replace("\u200b", "")
     md = re.search(r"\[[^\]]*\]\((https?://[^)\s]+)\)", s, re.I)
@@ -92,27 +81,64 @@ def normalize_input_url(raw: str) -> str:
     return s
 
 
+def host_is(host: str, domain: str) -> bool:
+    host = (host or "").lower().split(":")[0]
+    return host == domain or host.endswith("." + domain)
+
+
 def is_facebook_host(host: str) -> bool:
     host = (host or "").lower().split(":")[0]
-    return host == "fb.watch" or host.endswith(".facebook.com") or host == "facebook.com"
+    return host == "fb.watch" or host_is(host, "facebook.com")
 
 
 def is_tiktok_host(host: str) -> bool:
+    return host_is(host, "tiktok.com")
+
+
+def is_reddit_host(host: str) -> bool:
     host = (host or "").lower().split(":")[0]
-    return host in {"tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"} or host.endswith(".tiktok.com")
+    return host_is(host, "reddit.com") or host == "redd.it" or host.endswith(".redd.it")
 
 
-def resolve_tiktok_short_url(url: str) -> str:
+def follow_redirect(url: str, headers: Dict[str, str], timeout: int = 15) -> str:
+    req = UrlRequest(url, headers=headers, method="GET")
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.geturl()
+
+
+def clean_tiktok_url(url: str) -> str:
+    try:
+        p = urlparse(url)
+        if is_tiktok_host(p.netloc) and "/video/" in (p.path or ""):
+            return urlunparse((p.scheme or "https", p.netloc, p.path, "", "", ""))
+    except Exception:
+        pass
+    return url
+
+
+def resolve_tiktok_url(url: str) -> str:
     try:
         p = urlparse(url)
         host = (p.netloc or "").lower().split(":")[0]
-        if host not in {"vm.tiktok.com", "vt.tiktok.com"}:
+        if host in {"vm.tiktok.com", "vt.tiktok.com"}:
+            return clean_tiktok_url(follow_redirect(url, DESKTOP_HEADERS))
+        return clean_tiktok_url(url)
+    except Exception:
+        return url
+
+
+def resolve_reddit_url(url: str) -> str:
+    try:
+        p = urlparse(url)
+        path = p.path or ""
+        short_share = bool(re.search(r"/r/[^/]+/s/[^/]+/?$", path, re.I)) or p.netloc.lower() == "redd.it"
+        if not short_share:
             return url
-        req = UrlRequest(url, headers=DESKTOP_HEADERS, method="GET")
-        with urlopen(req, timeout=15) as resp:
-            final_url = resp.geturl()
-            if is_tiktok_host(urlparse(final_url).netloc):
-                return final_url
+        headers = dict(DESKTOP_HEADERS)
+        headers["Referer"] = "https://www.reddit.com/"
+        final_url = follow_redirect(url, headers)
+        if is_reddit_host(urlparse(final_url).netloc):
+            return final_url
     except Exception:
         pass
     return url
@@ -124,9 +150,7 @@ def looks_like_facebook_media_url(url: str) -> bool:
         if not is_facebook_host(p.netloc):
             return False
         path = (p.path or "").lower()
-        return any(x in path for x in ("/reel/", "/reels/", "/videos/", "/watch/", "/watch")) or \
-               path.endswith("/watch") or "v=" in (p.query or "") or \
-               path.endswith("/permalink.php") or path.endswith("/story.php")
+        return any(x in path for x in ("/reel/", "/reels/", "/videos/", "/watch")) or "v=" in (p.query or "")
     except Exception:
         return False
 
@@ -134,15 +158,11 @@ def looks_like_facebook_media_url(url: str) -> bool:
 def clean_facebook_url(url: str) -> str:
     try:
         p = urlparse(url)
-        if not is_facebook_host(p.netloc):
-            return url
-        if "/watch" in (p.path or "").lower() and "v=" in (p.query or ""):
-            keep = []
-            for part in p.query.split("&"):
-                if part.startswith("v="):
-                    keep.append(part)
+        path = (p.path or "").lower()
+        if "/watch" in path and "v=" in (p.query or ""):
+            keep = [x for x in p.query.split("&") if x.startswith("v=")]
             return urlunparse((p.scheme or "https", p.netloc, p.path, p.params, "&".join(keep), ""))
-        if any(x in (p.path or "").lower() for x in ("/reel/", "/reels/", "/videos/")):
+        if any(x in path for x in ("/reel/", "/reels/", "/videos/")):
             return urlunparse((p.scheme or "https", p.netloc, p.path, p.params, "", ""))
     except Exception:
         pass
@@ -155,23 +175,18 @@ def resolve_facebook_share_url(url: str) -> str:
         host = (p.netloc or "").lower()
         path = (p.path or "").lower()
         needs_resolution = host == "fb.watch" or "/share/" in path or path.startswith("/share")
-        if not is_facebook_host(host) or not needs_resolution:
+        if not needs_resolution:
             return clean_facebook_url(url)
-
-        req = UrlRequest(url, headers=BROWSER_HEADERS, method="GET")
+        req = UrlRequest(url, headers=MOBILE_HEADERS, method="GET")
         with urlopen(req, timeout=15) as resp:
             final_url = resp.geturl()
             if looks_like_facebook_media_url(final_url):
                 return clean_facebook_url(final_url)
-
             body = resp.read(512 * 1024).decode("utf-8", errors="ignore")
-            patterns = [
+            for pat in (
                 r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)',
-                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:url["\']',
                 r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)',
-                r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']canonical["\']',
-            ]
-            for pat in patterns:
+            ):
                 m = re.search(pat, body, re.I)
                 if m:
                     candidate = html.unescape(m.group(1)).replace("\\/", "/")
@@ -189,82 +204,91 @@ def prepare_target_url(raw: str) -> str:
         if is_facebook_host(host):
             return resolve_facebook_share_url(url)
         if is_tiktok_host(host):
-            return resolve_tiktok_short_url(url)
+            return resolve_tiktok_url(url)
+        if is_reddit_host(host):
+            return resolve_reddit_url(url)
     except Exception:
         pass
     return url
 
 
-def ydl_opts(req: ExtractRequest, target_url: Optional[str] = None) -> Dict[str, Any]:
+def quality_height(q: Optional[str]) -> Optional[int]:
+    if not q or q == "max":
+        return None
+    try:
+        return int(q)
+    except Exception:
+        return None
+
+
+def ydl_opts(req: ExtractRequest, target_url: str) -> Dict[str, Any]:
     h = quality_height(req.videoQuality)
     mode = (req.downloadMode or "auto").lower()
-
     if mode == "audio":
         fmt = "bestaudio/best"
     elif mode == "mute":
         fmt = f"bestvideo[height<={h}]" if h else "bestvideo"
+    elif h:
+        fmt = f"best[height<={h}]/bestvideo[height<={h}]+bestaudio/best"
     else:
-        if h:
-            fmt = f"best[height<={h}]/bestvideo[height<={h}]+bestaudio/best"
-        else:
-            fmt = "best/bestvideo+bestaudio"
+        fmt = "best/bestvideo+bestaudio"
 
-    tiktok = False
-    try:
-        tiktok = is_tiktok_host(urlparse(target_url or req.url).netloc)
-    except Exception:
-        pass
-
+    host = urlparse(target_url).netloc
+    tiktok = is_tiktok_host(host)
+    reddit = is_reddit_host(host)
     opts = {
         "quiet": True,
-        "no_warnings": True,
+        "no_warnings": False,
         "skip_download": True,
         "format": fmt,
         "noplaylist": False,
         "extract_flat": False,
         "nocheckcertificate": True,
-        "socket_timeout": 25,
-        "retries": 3 if tiktok else 2,
-        "fragment_retries": 3 if tiktok else 2,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
         "http_headers": {
-            "User-Agent": DESKTOP_HEADERS["User-Agent"] if tiktok else BROWSER_HEADERS["User-Agent"],
+            "User-Agent": DESKTOP_HEADERS["User-Agent"] if (tiktok or reddit) else MOBILE_HEADERS["User-Agent"],
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.tiktok.com/" if tiktok else "",
         },
     }
     if tiktok:
-        opts["impersonate"] = True
+        opts["impersonate"] = "chrome"
+        opts["http_headers"]["Referer"] = "https://www.tiktok.com/"
+    elif reddit:
+        opts["http_headers"]["Referer"] = "https://www.reddit.com/"
     if COOKIE_FILE:
         opts["cookiefile"] = COOKIE_FILE
     return opts
 
 
-def normalize_entry(info: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "id": info.get("id"),
-        "title": info.get("title") or info.get("fulltitle"),
-        "description": info.get("description"),
-        "thumbnail": info.get("thumbnail"),
-        "duration": info.get("duration"),
-        "uploader": info.get("uploader") or info.get("channel"),
-        "webpage_url": info.get("webpage_url"),
-        "url": info.get("url"),
-        "ext": info.get("ext"),
-        "width": info.get("width"),
-        "height": info.get("height"),
-        "filesize": info.get("filesize") or info.get("filesize_approx"),
-        "http_headers": info.get("http_headers") or {},
-    }
-
-
 def safe_filename(info: Dict[str, Any]) -> str:
     title = (info.get("title") or "media").strip()
-    bad = '<>:"/\\|?*'
-    for ch in bad:
+    for ch in '<>:"/\\|?*':
         title = title.replace(ch, "_")
     title = " ".join(title.split())[:120]
-    ext = info.get("ext") or "mp4"
-    return f"{title}.{ext}"
+    return f"{title}.{info.get('ext') or 'mp4'}"
+
+
+def pick_direct(info: Dict[str, Any]):
+    if info.get("url"):
+        return info.get("url"), info.get("http_headers") or {}
+
+    requested = info.get("requested_downloads") or []
+    if len(requested) == 1 and requested[0].get("url"):
+        return requested[0].get("url"), requested[0].get("http_headers") or info.get("http_headers") or {}
+
+    formats = info.get("formats") or []
+    combined = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")]
+    if combined:
+        best = max(combined, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+        return best.get("url"), best.get("http_headers") or info.get("http_headers") or {}
+
+    any_format = [f for f in formats if f.get("url")]
+    if any_format:
+        best = max(any_format, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
+        return best.get("url"), best.get("http_headers") or info.get("http_headers") or {}
+    return None, {}
 
 
 def extract(req: ExtractRequest) -> Dict[str, Any]:
@@ -279,32 +303,23 @@ def extract(req: ExtractRequest) -> Dict[str, Any]:
                 info["_ums_resolved_url"] = target_url
             return info
     except yt_dlp.utils.DownloadError as e:
-        is_tt = False
-        try:
-            is_tt = is_tiktok_host(urlparse(target_url).netloc)
-        except Exception:
-            pass
-        hint = (
-            "TikTok short links are resolved automatically and browser impersonation is enabled. A removed/private/region-restricted TikTok can still fail."
-            if is_tt else
-            "Facebook share links are resolved automatically. Private/login-only media may still require cookies."
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "extract.failed",
-                "message": str(e),
-                "hint": hint,
-                "resolved_url": target_url,
-            },
-        )
+        msg = str(e) or repr(e) or e.__class__.__name__
+        raise HTTPException(status_code=422, detail={
+            "code": "extract.failed",
+            "message": msg,
+            "hint": "Public media is supported. TikTok uses browser impersonation; Reddit share links are resolved automatically. Private, removed, region-restricted or login-only media can still fail.",
+            "resolved_url": target_url,
+        })
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail={"code": "extract.internal", "message": str(e), "resolved_url": target_url},
-        )
+        msg = str(e) or repr(e) or e.__class__.__name__
+        raise HTTPException(status_code=500, detail={
+            "code": "extract.internal",
+            "message": msg,
+            "hint": "Internal extractor/networking error. The server now returns the exception type instead of a blank message.",
+            "resolved_url": target_url,
+        })
 
 
 @app.get("/")
@@ -312,48 +327,46 @@ def root():
     return {
         "status": "ok",
         "name": "Universal Media Saver API",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "engine": "yt-dlp",
         "facebook_share_resolver": True,
         "tiktok_shortlink_resolver": True,
-        "tiktok_impersonation": True,
+        "reddit_share_resolver": True,
+        "tiktok_impersonation": "chrome",
         "cookies_loaded": bool(COOKIE_FILE),
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "2.2.0"}
+    return {"status": "ok", "version": "2.3.0"}
 
 
 @app.post("/extract")
 def extract_rich(req: ExtractRequest):
     info = extract(req)
-
     entries = info.get("entries")
     if entries:
-        clean = [normalize_entry(x) for x in entries if x]
-        return {
-            "status": "picker",
-            "service": info.get("extractor_key") or info.get("extractor"),
-            "title": info.get("title"),
-            "resolved_url": info.get("_ums_resolved_url"),
-            "items": clean,
-        }
+        items = []
+        for x in entries:
+            if not x:
+                continue
+            u, headers = pick_direct(x)
+            if u:
+                items.append({"url": u, "filename": safe_filename(x), "headers": headers})
+        if not items:
+            raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No downloadable items found."})
+        return {"status": "picker", "resolved_url": info.get("_ums_resolved_url"), "items": items}
 
-    item = normalize_entry(info)
-    if not item.get("url"):
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "extract.empty", "message": "No direct media URL was found."},
-        )
-
+    direct, headers = pick_direct(info)
+    if not direct:
+        raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No direct media URL was found."})
     return {
         "status": "ok",
         "service": info.get("extractor_key") or info.get("extractor"),
         "filename": safe_filename(info),
         "resolved_url": info.get("_ums_resolved_url"),
-        "media": item,
+        "media": {"url": direct, "http_headers": headers, "thumbnail": info.get("thumbnail")},
     }
 
 
@@ -361,56 +374,44 @@ def extract_rich(req: ExtractRequest):
 def cobalt_compatible(req: ExtractRequest):
     try:
         info = extract(req)
-
         entries = info.get("entries")
         if entries:
             picker = []
             for x in entries:
-                if not x or not x.get("url"):
+                if not x:
                     continue
-                picker.append({
-                    "type": "video" if (x.get("vcodec") not in (None, "none")) else "photo",
-                    "url": x.get("url"),
-                    "thumb": x.get("thumbnail"),
-                    "filename": safe_filename(x),
-                })
+                direct, headers = pick_direct(x)
+                if direct:
+                    picker.append({
+                        "type": "video" if x.get("vcodec") not in (None, "none") else "photo",
+                        "url": direct,
+                        "thumb": x.get("thumbnail"),
+                        "filename": safe_filename(x),
+                        "headers": headers,
+                    })
             if not picker:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"code": "extract.empty", "message": "No downloadable items found."},
-                )
-            return {
-                "status": "picker",
-                "picker": picker,
-                "resolvedUrl": info.get("_ums_resolved_url"),
-            }
+                raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No downloadable items found."})
+            return {"status": "picker", "picker": picker, "resolvedUrl": info.get("_ums_resolved_url")}
 
-        direct = info.get("url")
+        direct, headers = pick_direct(info)
         if not direct:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "extract.empty", "message": "No direct media URL was found."},
-            )
-
+            raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No direct media URL was found.", "resolved_url": info.get("_ums_resolved_url")})
         return {
             "status": "redirect",
             "url": direct,
             "filename": safe_filename(info),
-            "headers": info.get("http_headers") or {},
+            "headers": headers,
             "resolvedUrl": info.get("_ums_resolved_url"),
         }
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "status": "error",
-                "error": {
-                    "code": detail.get("code", "extract.failed"),
-                    "message": detail.get("message", "Extraction failed"),
-                    "hint": detail.get("hint"),
-                    "resolvedUrl": detail.get("resolved_url"),
-                    "engine": "yt-dlp",
-                },
+        return JSONResponse(status_code=exc.status_code, content={
+            "status": "error",
+            "error": {
+                "code": detail.get("code", "extract.failed"),
+                "message": detail.get("message", "Extraction failed"),
+                "hint": detail.get("hint"),
+                "resolvedUrl": detail.get("resolved_url"),
+                "engine": "yt-dlp",
             },
-        )
+        })
