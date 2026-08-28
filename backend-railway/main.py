@@ -5,12 +5,12 @@ import json
 import base64
 import tempfile
 from typing import Optional, Dict, Any, List, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, quote
 from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import yt_dlp
 
@@ -63,11 +63,11 @@ def is_snapchat_host(h): return host_is(h, "snapchat.com")
 
 def normalize_input_url(raw: str) -> str:
     s = (raw or "").strip().replace("\u200b", "")
-    md = re.search(r"\[[^\]]*\]\((https?://[^)\s]+)\)", s, re.I)
+    md = re.search(r"\[[^\]]*\](https?://[^)\s]+)\)", s, re.I)
     if md:
         s = md.group(1)
     else:
-        found = re.search(r"https?://[^\s)\]}>\"']+", s, re.I)
+        found = re.search(r"https?://[^\s)]}>\"\\']+", s, re.I)
         if found:
             s = found.group(0)
     while s.endswith((".", ",", ";", ")")):
@@ -143,8 +143,8 @@ def resolve_facebook_share_url(url: str) -> str:
             if looks_like_facebook_media_url(final):
                 return clean_facebook_url(final)
             body = resp.read(512 * 1024).decode("utf-8", errors="ignore")
-            for pat in (r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)',
-                        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)'):
+            for pat in (r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^\"\\']+)',
+                        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^\"\\']+)'):
                 m = re.search(pat, body, re.I)
                 if m:
                     candidate = html.unescape(m.group(1)).replace("\\/", "/")
@@ -282,6 +282,14 @@ def extract(req: ExtractRequest) -> Dict[str, Any]:
         "hint": "Public media is supported. TikTok retries multiple browser profiles; Reddit share links also use a JSON media fallback.",
         "resolved_url": target_url})
 
+def is_tiktok_cdn_url(url: str) -> bool:
+    """Check if URL is a TikTok CDN domain that needs proxying."""
+    try:
+        host = (urlparse(url).netloc or "").lower()
+        return any(x in host for x in ("tiktok", "tstatic.net", "akamaized.net", "douyin"))
+    except Exception:
+        return False
+
 def build_result(info: Dict[str, Any]):
     entries = info.get("entries")
     if entries:
@@ -298,8 +306,23 @@ def build_result(info: Dict[str, Any]):
     if not direct:
         raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No direct media URL was found.",
                                                            "resolved_url": info.get("_ums_resolved_url")})
+    
+    # For TikTok CDN URLs, use proxy endpoint instead of raw CDN
+    if is_tiktok_cdn_url(direct):
+        proxy_url = f"/download?url={quote(direct, safe='')}"
+        return {"status": "redirect", "url": proxy_url, "filename": safe_filename(info), "headers": headers,
+                "resolvedUrl": info.get("_ums_resolved_url")}
+    
     return {"status": "redirect", "url": direct, "filename": safe_filename(info), "headers": headers,
             "resolvedUrl": info.get("_ums_resolved_url")}
+
+def proxy_headers_for_url(url: str) -> Dict[str, str]:
+    """Get headers to use when proxying a request to a media URL."""
+    headers = {}
+    if is_tiktok_cdn_url(url):
+        headers["User-Agent"] = MOBILE_HEADERS["User-Agent"]
+        headers["Referer"] = "https://www.tiktok.com/"
+    return headers
 
 @app.get("/")
 def root():
@@ -309,6 +332,86 @@ def root():
 
 @app.get("/health")
 def health(): return {"status": "ok", "version": "2.4.0"}
+
+@app.get("/download")
+def download_proxy(url: str, range_header: Optional[str] = Header(None)):
+    """Proxy endpoint for downloading media files with proper headers and Range support."""
+    if not url:
+        raise HTTPException(status_code=400, detail="url parameter is required")
+    
+    try:
+        # Validate URL is a remote media URL
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            raise HTTPException(status_code=400, detail="Invalid URL")
+        
+        # Prepare headers for the upstream request
+        upstream_headers = proxy_headers_for_url(url)
+        upstream_headers["Accept"] = "video/mp4,video/*,*/*;q=0.9"
+        upstream_headers["Accept-Encoding"] = "gzip, deflate"
+        
+        # Add Range header if provided by client
+        if range_header:
+            upstream_headers["Range"] = range_header
+        
+        # Open connection to upstream
+        req = UrlRequest(url, headers=upstream_headers, method="GET")
+        resp = urlopen(req, timeout=30)
+        
+        # Extract response metadata
+        content_type = resp.headers.get("Content-Type", "video/mp4")
+        content_length = resp.headers.get("Content-Length")
+        accept_ranges = resp.headers.get("Accept-Ranges", "bytes")
+        content_range = resp.headers.get("Content-Range")
+        status_code = resp.getcode()
+        
+        # Prepare response headers
+        response_headers = {
+            "Content-Type": content_type,
+            "Accept-Ranges": accept_ranges,
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range, Content-Type",
+            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+        }
+        
+        if content_length:
+            response_headers["Content-Length"] = content_length
+        if content_range:
+            response_headers["Content-Range"] = content_range
+        
+        # Set Content-Disposition for downloads
+        filename = "video.mp4"
+        try:
+            disposition = resp.headers.get("Content-Disposition", "")
+            if disposition:
+                response_headers["Content-Disposition"] = disposition
+            else:
+                response_headers["Content-Disposition"] = f"attachment; filename={filename}"
+        except Exception:
+            response_headers["Content-Disposition"] = f"attachment; filename={filename}"
+        
+        # Stream the response
+        def iter_content(chunk_size: int = 8192):
+            try:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                resp.close()
+        
+        return StreamingResponse(
+            iter_content(),
+            status_code=status_code,
+            headers=response_headers,
+            media_type=content_type
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to proxy media: {str(e)}")
 
 @app.post("/extract")
 def extract_rich(req: ExtractRequest):
@@ -329,3 +432,4 @@ def cobalt_compatible(req: ExtractRequest):
         return JSONResponse(status_code=exc.status_code, content={"status": "error", "error": {
             "code": detail.get("code", "extract.failed"), "message": detail.get("message", "Extraction failed"),
             "hint": detail.get("hint"), "resolvedUrl": detail.get("resolved_url"), "engine": "yt-dlp"}})
+
