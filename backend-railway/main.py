@@ -184,12 +184,12 @@ def resolve_facebook_share_url(url: str) -> str:
                 return clean_facebook_url(final_url)
             body = resp.read(512 * 1024).decode("utf-8", errors="ignore")
             for pat in (
-                r'<meta[^>]+property=["\\']og:url["\\'][^>]+content=["\\']([^\"\\']+)',
-                r'<link[^>]+rel=["\\']canonical["\\'][^>]+href=["\\']([^\"\\']+)',
+                r"<meta[^>]+property=[\"']og:url[\"'][^>]+content=[\"']([^\"']+)",
+                r"<link[^>]+rel=[\"']canonical[\"'][^>]+href=[\"']([^\"']+)",
             ):
                 m = re.search(pat, body, re.I)
                 if m:
-                    candidate = html.unescape(m.group(1)).replace("\\\\/", "/")
+                    candidate = html.unescape(m.group(1)).replace("\\/", "/")
                     if looks_like_facebook_media_url(candidate):
                         return clean_facebook_url(candidate)
     except Exception:
