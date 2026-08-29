@@ -348,27 +348,54 @@ def extract(req: ExtractRequest) -> Dict[str, Any]:
 
 def build_result(info: Dict[str, Any]):
     entries = info.get("entries")
+
     if entries:
         picker = []
+
         for x in entries:
-            if not x: continue
+            if not x:
+                continue
+
             direct, headers = pick_direct(x)
+
             if direct:
-                picker.append({"type": "video" if x.get("vcodec") not in (None, "none") else "photo",
-                               "url": direct, "thumb": x.get("thumbnail"), "filename": safe_filename(x), "headers": headers})
+                picker.append({
+                    "type": "video" if x.get("vcodec") not in (None, "none") else "photo",
+                    "url": direct,
+                    "thumb": x.get("thumbnail"),
+                    "filename": safe_filename(x),
+                    "headers": headers
+                })
+
         if picker:
-            return {"status": "picker", "picker": picker, "resolvedUrl": info.get("_ums_resolved_url")}
+            return {
+                "status": "picker",
+                "picker": picker,
+                "resolvedUrl": info.get("_ums_resolved_url")
+            }
+
+
     direct, headers = pick_direct(info)
+
     if not direct:
-        raise HTTPException(status_code=422, detail={"code": "extract.empty", "message": "No direct media URL was found.",
-                                                           "resolved_url": info.get("_ums_resolved_url")})
-   return {
-    "status": "download",
-    "url":
-    "https://universal-media-saver-production.up.railway.app/download?url="
-    + quote(direct),
-    "filename": safe_filename(info)
-}
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "extract.empty",
+                "message": "No direct media URL was found.",
+                "resolved_url": info.get("_ums_resolved_url")
+            }
+        )
+
+
+    return {
+        "status": "download",
+        "url":
+            "https://universal-media-saver-production.up.railway.app/download?url="
+            + quote(direct),
+        "filename": safe_filename(info),
+        "headers": headers
+    }
 
 @app.get("/")
 def root():
