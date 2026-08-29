@@ -372,12 +372,12 @@ def build_result(info: Dict[str, Any]):
 
 @app.get("/")
 def root():
-    return {"status": "ok", "name": "Universal Media Saver API", "version": "2.4.0", "engine": "yt-dlp",
+    return {"status": "ok", "name": "Universal Media Saver API", "version": "2.5.0", "engine": "yt-dlp",
             "facebook_share_resolver": True, "tiktok_shortlink_resolver": True, "reddit_share_resolver": True,
             "reddit_json_fallback": True, "prefer_clean_source_stream": True, "cookies_loaded": bool(COOKIE_FILE)}
 
 @app.get("/health")
-def health(): return {"status": "ok", "version": "2.4.0"}
+def health(): return {"status": "ok", "version": "2.5.0"}
 
 @app.post("/extract")
 def extract_rich(req: ExtractRequest):
