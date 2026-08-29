@@ -15,42 +15,37 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import yt_dlp
 
-app = FastAPI(title="Universal Media Saver API", version="2.4.0")
+app = FastAPI(title="Universal Media Saver API", version="2.5.0")
 @app.get("/download")
 async def download(url: str):
 
     url = unquote(url)
 
     headers = {
-        "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36",
-        "Referer":
-        "https://www.tiktok.com/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Referer": "https://www.tiktok.com/",
+        "Accept": "*/*",
+        "Range": "bytes=0-"
     }
 
     async def stream_video():
-
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=None
         ) as client:
-
             async with client.stream(
                 "GET",
                 url,
                 headers=headers
             ) as response:
-
                 async for chunk in response.aiter_bytes(65536):
                     yield chunk
-
 
     return StreamingResponse(
         stream_video(),
         media_type="video/mp4",
         headers={
-            "Content-Disposition":
-            "attachment; filename=video.mp4"
+            "Content-Disposition": "attachment; filename=video.mp4"
         }
     )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
@@ -244,29 +239,60 @@ def safe_filename(info: Dict[str, Any]) -> str:
     title = " ".join(title.split())[:120]
     return f"{title}.{info.get('ext') or 'mp4'}"
 
-def format_score(f: Dict[str, Any]) -> Tuple:
-    text = " ".join(str(f.get(k) or "") for k in ("format_id", "format", "format_note", "url")).lower()
-    watermark_penalty = -100000 if any(x in text for x in ("watermark", "watermarked")) else 0
-    clean_bonus = 50000 if any(x in text for x in ("nowm", "no_watermark", "original", "source", "play_addr", "playaddr")) else 0
-    if "download_addr" in text or "downloadaddr" in text:
-        watermark_penalty -= 40000
-    combined = 1 if f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none") else 0
-    return (watermark_penalty + clean_bonus, combined, f.get("height") or 0, f.get("tbr") or 0, f.get("filesize") or f.get("filesize_approx") or 0)
+def format_score(f: Dict[str, Any], platform: str = "") -> Tuple:
+    text = " ".join(str(f.get(k) or "") for k in ("format_id","format","format_note","url")).lower()
+    score = 0
+
+    if platform == "tiktok":
+        if any(x in text for x in ("play_addr","playaddr","nowm","no_watermark","original")):
+            score += 50000
+        if "download_addr" in text:
+            score -= 30000
+
+    if platform == "snapchat":
+        if any(x in text for x in ("watermark","watermarked","logo")):
+            score -= 100000
+        if any(x in text for x in ("clean","original","source","media")):
+            score += 50000
+
+    combined = 1 if f.get("vcodec") not in (None,"none") and f.get("acodec") not in (None,"none") else 0
+
+    return (
+        score,
+        combined,
+        f.get("height") or 0,
+        f.get("tbr") or 0,
+        f.get("filesize") or f.get("filesize_approx") or 0
+    )
+
 
 def pick_direct(info: Dict[str, Any]):
     formats = [f for f in (info.get("formats") or []) if f and f.get("url")]
+
+    host = urlparse(info.get("_ums_resolved_url","")).netloc.lower()
+    platform = ""
+
+    if "tiktok.com" in host:
+        platform = "tiktok"
+    elif "snapchat.com" in host:
+        platform = "snapchat"
+
     if formats:
-        best = max(formats, key=format_score)
+        best = max(formats, key=lambda x: format_score(x, platform))
         return best.get("url"), best.get("http_headers") or info.get("http_headers") or {}
+
     requested = info.get("requested_downloads") or info.get("requested_formats") or []
     if isinstance(requested, list):
-        candidates = [x for x in requested if isinstance(x, dict) and x.get("url")]
+        candidates=[x for x in requested if isinstance(x,dict) and x.get("url")]
         if candidates:
-            best = max(candidates, key=format_score)
-            return best.get("url"), best.get("http_headers") or info.get("http_headers") or {}
+            best=max(candidates,key=lambda x: format_score(x, platform))
+            return best.get("url"), best.get("http_headers") or {}
+
     if info.get("url"):
         return info.get("url"), info.get("http_headers") or {}
+
     return None, {}
+
 
 def reddit_json_fallback(target_url: str) -> Optional[Dict[str, Any]]:
     try:
@@ -341,7 +367,7 @@ def build_result(info: Dict[str, Any]):
     "url":
     "https://universal-media-saver-production.up.railway.app/download?url="
     + quote(direct),
-    "filename": filename
+    "filename": safe_filename(info)
 }
 
 @app.get("/")
