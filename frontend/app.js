@@ -12,13 +12,13 @@ function apiUrl(){
   return base.endsWith('/') ? base : base + '/';
 }
 
-function proxyDownloadUrl(url){
+function proxyDownloadUrl(url, headers={}){
   if(!url) return '#';
-  // Extractor URLs (especially TikTok/Snapchat CDN URLs) can be signed,
-  // short-lived, and/or require a Referer/User-Agent. Always send them
-  // through our Railway download tunnel instead of opening the CDN URL
-  // directly in the browser.
-  return `${apiUrl()}download?url=${encodeURIComponent(url)}`;
+  const params = new URLSearchParams();
+  params.set('url', url);
+  const referer = headers?.Referer || headers?.referer;
+  if(referer) params.set('referer', referer);
+  return `${apiUrl()}download?${params.toString()}`;
 }
 
 function setStatus(message, type=''){
@@ -64,7 +64,9 @@ function renderPicker(data){
     meta.innerHTML = `<strong>Item ${i+1}</strong><br><span style="color:#9aa4b6;font-size:13px">${safeText(item.type || 'media')}</span>`;
     card.appendChild(meta);
     const a = document.createElement('a');
-    a.className='downloadLink'; a.href=proxyDownloadUrl(item.url); a.target='_blank'; a.rel='noopener noreferrer'; a.textContent='Download';
+    a.className='downloadLink';
+    a.href=item.downloadUrl || proxyDownloadUrl(item.url, item.headers || {});
+    a.target='_blank'; a.rel='noopener noreferrer'; a.textContent='Download';
     card.appendChild(a);
     grid.appendChild(card);
   });
