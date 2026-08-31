@@ -12,6 +12,15 @@ function apiUrl(){
   return base.endsWith('/') ? base : base + '/';
 }
 
+function proxyDownloadUrl(url){
+  if(!url) return '#';
+  // Extractor URLs (especially TikTok/Snapchat CDN URLs) can be signed,
+  // short-lived, and/or require a Referer/User-Agent. Always send them
+  // through our Railway download tunnel instead of opening the CDN URL
+  // directly in the browser.
+  return `${apiUrl()}download?url=${encodeURIComponent(url)}`;
+}
+
 function setStatus(message, type=''){
   statusBox.textContent = message;
   statusBox.className = `status ${type}`.trim();
@@ -55,13 +64,13 @@ function renderPicker(data){
     meta.innerHTML = `<strong>Item ${i+1}</strong><br><span style="color:#9aa4b6;font-size:13px">${safeText(item.type || 'media')}</span>`;
     card.appendChild(meta);
     const a = document.createElement('a');
-    a.className='downloadLink'; a.href=item.url; a.target='_blank'; a.rel='noopener noreferrer'; a.textContent='Download';
+    a.className='downloadLink'; a.href=proxyDownloadUrl(item.url); a.target='_blank'; a.rel='noopener noreferrer'; a.textContent='Download';
     card.appendChild(a);
     grid.appendChild(card);
   });
   if(data.audio){
     const a = document.createElement('a');
-    a.className='downloadLink'; a.href=data.audio; a.target='_blank'; a.rel='noopener noreferrer'; a.textContent='Download slideshow audio';
+    a.className='downloadLink'; a.href=proxyDownloadUrl(data.audio); a.target='_blank'; a.rel='noopener noreferrer'; a.textContent='Download slideshow audio';
     result.appendChild(a);
   }
   result.classList.remove('hidden');
@@ -87,7 +96,7 @@ downloadBtn.addEventListener('click', async () => {
         downloadMode: mode.value,
         filenameStyle: 'pretty',
         youtubeVideoCodec: 'h264',
-        alwaysProxy: false,
+        alwaysProxy: true,
         disableMetadata: false,
         twitterGif: true
       })
@@ -102,7 +111,7 @@ downloadBtn.addEventListener('click', async () => {
       throw new Error(`${service ? service + ': ' : ''}${code}`);
     }
     if(data.status === 'picker') renderPicker(data);
-    else if((data.status === 'redirect' || data.status === 'tunnel') && data.url) renderSingle(data);
+    else if(['download', 'redirect', 'tunnel'].includes(data.status) && data.url) renderSingle(data);
     else throw new Error(`Unsupported API response: ${data.status || 'unknown'}`);
 
     setStatus('Media processed successfully.', 'ok');
