@@ -356,6 +356,12 @@ def build_result(info: Dict[str, Any]):
             if not x:
                 continue
 
+            # yt-dlp playlist/story entries do not inherit our private source marker.
+            # Propagate it so Snapchat/TikTok format scoring still knows the platform
+            # and can reject watermarked/download variants in favor of clean sources.
+            if isinstance(x, dict) and not x.get("_ums_resolved_url"):
+                x["_ums_resolved_url"] = info.get("_ums_resolved_url", "")
+
             direct, headers = pick_direct(x)
 
             if direct:
