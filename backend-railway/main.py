@@ -7,7 +7,7 @@ import tempfile
 from typing import Optional, Dict, Any, List, Tuple
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request as UrlRequest, urlopen
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,39 +15,42 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import yt_dlp
 
-app = FastAPI(title="Universal Media Saver API", version="2.5.0")
+app = FastAPI(title="Universal Media Saver API", version="2.5.1")
+
+ALLOWED_REFERERS = (
+    "https://www.tiktok.com/",
+    "https://www.snapchat.com/",
+    "https://www.reddit.com/",
+    "https://www.facebook.com/",
+)
+
 @app.get("/download")
-async def download(url: str):
-
-    url = unquote(url)
-
+async def download(url: str, referer: Optional[str] = None):
+    # FastAPI has already decoded the query parameter once. Do NOT unquote it
+    # again: signed TikTok/Snapchat CDN URLs often contain percent-encoded
+    # signature data and a second decode invalidates those signatures.
+    safe_referer = referer if referer in ALLOWED_REFERERS else None
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
-        "Referer": "https://www.tiktok.com/",
         "Accept": "*/*",
         "Range": "bytes=0-"
     }
+    if safe_referer:
+        headers["Referer"] = safe_referer
 
     async def stream_video():
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=None
-        ) as client:
-            async with client.stream(
-                "GET",
-                url,
-                headers=headers
-            ) as response:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=None) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                response.raise_for_status()
                 async for chunk in response.aiter_bytes(65536):
                     yield chunk
 
     return StreamingResponse(
         stream_video(),
         media_type="video/mp4",
-        headers={
-            "Content-Disposition": "attachment; filename=video.mp4"
-        }
+        headers={"Content-Disposition": "attachment; filename=video.mp4"}
     )
+
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["*"])
 
@@ -265,7 +268,6 @@ def format_score(f: Dict[str, Any], platform: str = "") -> Tuple:
         f.get("filesize") or f.get("filesize_approx") or 0
     )
 
-
 def pick_direct(info: Dict[str, Any]):
     formats = [f for f in (info.get("formats") or []) if f and f.get("url")]
 
@@ -292,7 +294,6 @@ def pick_direct(info: Dict[str, Any]):
         return info.get("url"), info.get("http_headers") or {}
 
     return None, {}
-
 
 def reddit_json_fallback(target_url: str) -> Optional[Dict[str, Any]]:
     try:
@@ -346,28 +347,30 @@ def extract(req: ExtractRequest) -> Dict[str, Any]:
         "hint": "Public media is supported. TikTok retries multiple browser profiles; Reddit share links also use a JSON media fallback.",
         "resolved_url": target_url})
 
+def proxy_url(direct: str, headers: Dict[str, Any]) -> str:
+    result = "https://universal-media-saver-production.up.railway.app/download?url=" + quote(direct, safe="")
+    referer = (headers or {}).get("Referer") or (headers or {}).get("referer")
+    if referer in ALLOWED_REFERERS:
+        result += "&referer=" + quote(referer, safe="")
+    return result
+
 def build_result(info: Dict[str, Any]):
     entries = info.get("entries")
 
     if entries:
         picker = []
-
         for x in entries:
             if not x:
                 continue
-
-            # yt-dlp playlist/story entries do not inherit our private source marker.
-            # Propagate it so Snapchat/TikTok format scoring still knows the platform
-            # and can reject watermarked/download variants in favor of clean sources.
             if isinstance(x, dict) and not x.get("_ums_resolved_url"):
                 x["_ums_resolved_url"] = info.get("_ums_resolved_url", "")
 
             direct, headers = pick_direct(x)
-
             if direct:
                 picker.append({
                     "type": "video" if x.get("vcodec") not in (None, "none") else "photo",
                     "url": direct,
+                    "downloadUrl": proxy_url(direct, headers),
                     "thumb": x.get("thumbnail"),
                     "filename": safe_filename(x),
                     "headers": headers
@@ -380,9 +383,7 @@ def build_result(info: Dict[str, Any]):
                 "resolvedUrl": info.get("_ums_resolved_url")
             }
 
-
     direct, headers = pick_direct(info)
-
     if not direct:
         raise HTTPException(
             status_code=422,
@@ -393,24 +394,21 @@ def build_result(info: Dict[str, Any]):
             }
         )
 
-
     return {
         "status": "download",
-        "url":
-            "https://universal-media-saver-production.up.railway.app/download?url="
-            + quote(direct),
+        "url": proxy_url(direct, headers),
         "filename": safe_filename(info),
         "headers": headers
     }
 
 @app.get("/")
 def root():
-    return {"status": "ok", "name": "Universal Media Saver API", "version": "2.5.0", "engine": "yt-dlp",
+    return {"status": "ok", "name": "Universal Media Saver API", "version": "2.5.1", "engine": "yt-dlp",
             "facebook_share_resolver": True, "tiktok_shortlink_resolver": True, "reddit_share_resolver": True,
             "reddit_json_fallback": True, "prefer_clean_source_stream": True, "cookies_loaded": bool(COOKIE_FILE)}
 
 @app.get("/health")
-def health(): return {"status": "ok", "version": "2.5.0"}
+def health(): return {"status": "ok", "version": "2.5.1"}
 
 @app.post("/extract")
 def extract_rich(req: ExtractRequest):
